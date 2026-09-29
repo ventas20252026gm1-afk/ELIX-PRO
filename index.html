@@ -2172,6 +2172,14 @@ ${ELIX_REGLA_LATEX}`
         if (soloFuentesAportadas) return false;
         if (modo !== 'none') return true;
 
+        // Si el router general de Groq ya interpretó esta misma orden, reutilizamos
+        // su decisión de búsqueda y evitamos una segunda clasificación innecesaria.
+        const rutaGroq=window.ELIX_ULTIMA_RUTA_GROQ;
+        const mismaOrden=!!(rutaGroq
+            && String(rutaGroq.texto||'').trim()===q
+            && (Date.now()-Number(rutaGroq.at||0))<120000);
+        if(mismaOrden && typeof rutaGroq.needs_web==='boolean') return rutaGroq.needs_web;
+
         const señalesWeb = [
             'internet','web','buscar','busca','investiga','investigar',
             'fuente','fuentes','bibliografía','bibliografia','referencia','referencias',
@@ -2914,7 +2922,7 @@ ${contextoChat}`);
         const t=elixNormalizarImagenTexto(texto);
         if(!t) return false;
 
-        const accion=/\b(edita|editar|editame|modifica|modificar|modificame|modifiques|cambia|cambiar|cambiame|cambies|cambiale|corrige|corregir|corrigeme|corrijas|ajusta|ajustar|ajustame|ajustes|reemplaza|reemplazar|reemplaces|sustituye|sustituir|sustituyas|quita|quitar|quitame|quites|elimina|eliminar|elimines|borra|borrar|borres|anade|anadir|anadas|agrega|agregar|agregues|pon|poner|pongas|mueve|mover|muevas|mejora|mejorar|mejores|hazla|dejala|cambiala|corrigela|ajustala|quitale|ponle|agregale|anadele)\b/.test(t);
+        const accion=/\b(edita|editar|editame|modifica|modificar|modificame|modifiques|cambia|cambiar|cambiame|cambies|cambiale|corrige|corregir|corrigeme|corrijas|arregla|arreglar|arreglame|arregles|repara|reparar|reparame|repares|ajusta|ajustar|ajustame|ajustes|reemplaza|reemplazar|reemplaces|sustituye|sustituir|sustituyas|quita|quitar|quitame|quites|elimina|eliminar|elimines|borra|borrar|borres|anade|anadir|anadas|agrega|agregar|agregues|pon|poner|pongas|mueve|mover|muevas|mejora|mejorar|mejores|hazla|dejala|cambiala|corrigela|ajustala|quitale|ponle|agregale|anadele)\b/.test(t);
         const referencia=/\b(esa imagen|esta imagen|la imagen|imagen anterior|ultima imagen|última imagen|esa infografia|esta infografia|la infografia|infografia anterior|ese poster|este poster|el poster|sobre esa|sobre esta|en esa|en esta|la que hiciste|la que me hiciste|la que generaste|imagen que hiciste|imagen que generaste)\b/.test(t);
         const objeto=/\b(imagen|infografia|poster|ilustracion|render|dibujo|diagrama|banner|portada|afiche|foto|fotografia)\b/.test(t);
         const explicita=/\b(edita|editar|modifica|modificar|modifiques|corrige|corregir|corrijas|cambia|cambiar|cambies|mejora|mejorar)\b/.test(t) && objeto;
@@ -3161,14 +3169,30 @@ ${promptImagen}`, displayContent:orden, attachments:adjuntosMeta });
             return await elixGenerarYExportar(decision,ordenDirecta);
         }
 
+        // El mismo router Groq que interpreta exportaciones también decide si la orden
+        // es chat normal, generación de imagen o una edición sobre la última imagen.
+        // Si Groq no está disponible, conservamos exactamente los detectores locales como respaldo.
+        const rutaGroq=window.ELIX_ULTIMA_RUTA_GROQ;
+        const rutaValida=!!(rutaGroq
+            && String(rutaGroq.texto||'').trim()===ordenDirecta
+            && (Date.now()-Number(rutaGroq.at||0))<120000
+            && Number(rutaGroq.confidence||0)>=0.55);
+        const accionGroq=rutaValida ? String(rutaGroq.action||'') : '';
+
         const esEdicionImagen = ordenDirecta && !elixAdjuntosPendientes.length
-            ? elixPareceEdicionImagen(ordenDirecta, obtenerChatActual())
+            ? (accionGroq
+                ? (accionGroq==='image_edit' && !!elixUltimaImagenGenerada(obtenerChatActual()))
+                : elixPareceEdicionImagen(ordenDirecta, obtenerChatActual()))
             : false;
         if(esEdicionImagen){
             return await elixEditarImagenChat(ordenDirecta);
         }
 
-        const esImagen = ordenDirecta ? elixPareceSolicitudImagen(ordenDirecta, elixAdjuntosPendientes.length > 0) : false;
+        const esImagen = ordenDirecta
+            ? (accionGroq
+                ? accionGroq==='image_generate'
+                : elixPareceSolicitudImagen(ordenDirecta, elixAdjuntosPendientes.length > 0))
+            : false;
         if(esImagen && !elixAdjuntosPendientes.length){
             return await elixGenerarImagenChat(ordenDirecta,'',[]);
         }
@@ -3422,20 +3446,47 @@ ${detalle}`);
         };
     }
 
+    function elixNormalizarRutaGroq(r){
+        if(!r || typeof r!=='object') return null;
+        const allowed=new Set(['chat','image_generate','image_edit']);
+        const action=allowed.has(String(r.action||'')) ? String(r.action) : 'chat';
+        const confidence=Math.max(0,Math.min(1,Number(r.confidence)||0));
+        return { action, needs_web:!!r.needs_web, confidence };
+    }
+
     async function elixConsultarRouterGroq(texto){
         try{
+            const chatActual=obtenerChatActual();
+            const ultimaImagen=typeof elixUltimaImagenGenerada==='function' ? elixUltimaImagenGenerada(chatActual) : null;
+            const recientes=elixMensajesVisibles(chatActual).slice(-8).map(x=>({
+                role:x.m.role,
+                text:elixContenidoVisibleMensaje(x.m).replace(/\s+/g,' ').trim().slice(0,900),
+                has_image:!!x.m.generatedImage?.dataUrl
+            }));
             const payload={
                 mode:'classify',
                 text:String(texto||''),
                 current_chat_id:String(currentChatId||''),
-                current_chat_title:String(obtenerChatActual()?.title||''),
+                current_chat_title:String(chatActual?.title||''),
+                has_generated_image:!!ultimaImagen,
+                last_assistant_is_image:typeof elixUltimoTurnoAsistenteEsImagen==='function' ? elixUltimoTurnoAsistenteEsImagen(chatActual) : false,
+                last_image_prompt:String(ultimaImagen?.image?.prompt||'').slice(0,1200),
+                has_pending_attachments:!!elixAdjuntosPendientes.length,
+                recent_messages:recientes,
                 chats:(chats||[]).slice(0,80).map(c=>({id:String(c.id),title:String(c.title||''),preview:elixVistaPreviaChat(c)}))
             };
             const r=await elixBackend('elix-export-router',payload);
+            const ruta=elixNormalizarRutaGroq(r?.route);
+            window.ELIX_ULTIMA_RUTA_GROQ=ruta ? {
+                ...ruta,
+                texto:String(texto||'').trim(),
+                at:Date.now()
+            } : null;
             if(!r?.ok || !r?.decision) return null;
             return elixNormalizarDecisionRouter({...r.decision,source:'groq'},texto);
         }catch(e){
-            console.warn('Elix AI usó clasificación local de exportación.',e);
+            window.ELIX_ULTIMA_RUTA_GROQ=null;
+            console.warn('Elix AI usó sus detectores locales porque el router inteligente no estuvo disponible.',e);
             return null;
         }
     }
@@ -3512,9 +3563,13 @@ ${detalle}`);
 
     window.elixDetectarSolicitudExportacion=function(texto){ return elixClasificarExportacionLocal(texto); };
     window.elixDetectarSolicitudExportacionInteligente=async function(texto){
-        if(!elixPareceOrdenExportacion(texto)) return null;
+        // Groq actúa como intermediario de intención para TODA orden escrita:
+        // exportación, chat, búsqueda, generación o edición de imágenes.
+        // Si falla, Elix conserva los detectores locales que ya funcionaban.
         const viaGroq=await elixConsultarRouterGroq(texto);
-        return viaGroq || elixClasificarExportacionLocal(texto);
+        if(viaGroq) return viaGroq;
+        if(!elixPareceOrdenExportacion(texto)) return null;
+        return elixClasificarExportacionLocal(texto);
     };
 
     function elixWordXml(s){
