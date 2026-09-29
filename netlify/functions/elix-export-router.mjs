@@ -95,12 +95,18 @@ function normalizeDecision(d) {
 function normalizeRoute(r) {
   if (!r || typeof r !== 'object') return null;
   const allowedAction = new Set(['chat', 'image_generate', 'image_edit']);
+  const allowedSourcePolicy = new Set(['auto', 'provided_only', 'conversation_only', 'web', 'hybrid']);
   const action = allowedAction.has(String(r.action || '')) ? String(r.action) : 'chat';
+  const sourcePolicy = allowedSourcePolicy.has(String(r.source_policy || '')) ? String(r.source_policy) : 'auto';
   const rawConfidence = Number(r.confidence);
   const confidence = Number.isFinite(rawConfidence) ? Math.max(0, Math.min(1, rawConfidence)) : 0;
+  const needsWeb = sourcePolicy === 'web' || sourcePolicy === 'hybrid'
+    ? true
+    : (sourcePolicy === 'provided_only' || sourcePolicy === 'conversation_only' ? false : Boolean(r.needs_web));
   return {
     action,
-    needs_web: Boolean(r.needs_web),
+    needs_web: needsWeb,
+    source_policy: sourcePolicy,
     confidence,
   };
 }
@@ -175,6 +181,13 @@ Esquema exacto: {"message_indices":[0,1],"reason":"texto breve"}`;
     const hasGeneratedImage = Boolean(body.has_generated_image);
     const lastAssistantIsImage = Boolean(body.last_assistant_is_image);
     const hasPendingAttachments = Boolean(body.has_pending_attachments);
+    const hasPreviousAssistantAnswer = Boolean(body.has_previous_assistant_answer);
+    const selectedAnalysisMode = String(body.selected_analysis_mode || 'medium').toLowerCase();
+    const selectedCitationMode = String(body.selected_citation_mode || 'none').toLowerCase();
+    const pendingAttachments = Array.isArray(body.pending_attachments) ? body.pending_attachments.slice(0, 12) : [];
+    const attachmentSummary = pendingAttachments.length
+      ? pendingAttachments.map((a, i) => `${i + 1}. ${String(a?.name || 'archivo').slice(0, 180)} | ${String(a?.type || 'tipo desconocido').slice(0, 100)}`).join('\n')
+      : '(ninguno)';
     const lastImagePrompt = String(body.last_image_prompt || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
     const recentMessages = Array.isArray(body.recent_messages) ? body.recent_messages.slice(-8) : [];
     const recentContext = recentMessages.map((m, i) => {
@@ -184,11 +197,19 @@ Esquema exacto: {"message_indices":[0,1],"reason":"texto breve"}`;
       return `${i + 1}. ${role}${visual}: ${txt}`;
     }).join('\n') || '(sin contexto reciente)';
 
-    const system = `Eres el router central de intención de Elix AI. NO respondas al usuario, NO redactes la tarea y NO expliques tu razonamiento. Devuelve SOLO un objeto JSON válido.
+    const system = `Eres el ORQUESTADOR CENTRAL de intención de Elix AI. NO respondas al usuario, NO redactes la tarea y NO expliques tu razonamiento. Devuelve SOLO un objeto JSON válido.
 
-Debes resolver DOS cosas a la vez:
+Tu trabajo es interpretar la intención natural del usuario y ENRUTARLA, sin sustituir los controles manuales elegidos por el usuario.
+
+CONTROLES MANUALES INMUTABLES
+- SELECTED_ANALYSIS_MODE llega desde la interfaz y puede ser low, medium, high o max. NO lo cambies ni lo rebajes. Solo úsalo para decidir si una tarea NUEVA necesita evidencia externa.
+- SELECTED_CITATION_MODE llega desde la interfaz y puede ser none, apa7, vancouver o ieee. NO lo cambies. Es una preferencia de formato de citación, NO una autorización automática para ignorar el material aportado.
+- El usuario no debería tener que escribir comandos técnicos: interpreta lenguaje natural, continuidad conversacional y adjuntos.
+
+Debes resolver TRES cosas a la vez:
 A) si existe una orden de exportación Word/PDF;
-B) qué acción operativa debe ejecutar Elix con el prompt.
+B) qué acción operativa debe ejecutar Elix;
+C) qué FUENTES debe usar y si corresponde buscar en la web.
 
 PARTE A — EXPORTACIÓN
 Clasifica intent en UNA opción:
@@ -223,21 +244,39 @@ Reglas MUY IMPORTANTES para image_edit:
 - Interpreta continuidad conversacional, no solo palabras exactas. Si acaba de generarse/editarse una imagen y el usuario dice "ahora cambia...", "arregla eso", "igual el paréntesis...", "ponlo azul", "quita eso", "corrige el punto 3", "haz ese texto más grande", etc., normalmente es image_edit aunque no repita la palabra imagen.
 - Si dice "en esa imagen", "la imagen que me mandaste", "la que hiciste", "esa infografía", "sobre la anterior" y pide un cambio visual, es image_edit.
 - No confundas cambios sobre el chat/documento/respuesta/modelo con edición de imagen.
-- Una pregunta SOBRE el contenido de la imagen ("qué significa esto", "explícame el punto 3") es chat, no image_edit, salvo que pida cambiar/corregir visualmente la imagen.
+- Una pregunta SOBRE el contenido de la imagen es chat, no image_edit, salvo que pida cambiar/corregir visualmente la imagen.
 - Si pide una versión completamente nueva o una nueva imagen distinta, usa image_generate.
 - Si hay un archivo/imagen adjunto y pide analizar/leer/describir, usa chat. Si pide crear una infografía/imagen BASADA en adjuntos, usa image_generate.
 
-route.needs_web:
-- true si para responder el prompt se necesita buscar fuentes, navegar, verificar información actual/reciente, noticias, precios, datos cambiantes o el usuario pide explícitamente investigar/buscar en internet.
-- false para conocimiento estable, conversación, cálculos, edición/generación visual basada en material ya disponible, o si el usuario exige usar únicamente el contenido aportado.
-- Esta decisión NO cambia los selectores manuales de modelo ni el modo académico; esos controles siguen mandando por separado.
+PARTE C — POLÍTICA DE FUENTES
+route.source_policy debe ser exactamente una de:
+- provided_only: trabajar SOLO con archivos, imágenes, texto o material aportado por el usuario en este turno o ya disponible como contexto aportado. NO buscar web.
+- conversation_only: trabajar SOLO a partir de la conversación/respuesta anterior. NO buscar web.
+- web: la tarea necesita información externa y debe investigarse en la web.
+- hybrid: usar material aportado/conversación Y además investigar/contrastar/actualizar con web.
+- auto: no existe una restricción de fuentes y no hace falta web para una tarea estable (cálculo, redacción general, conversación, etc.).
+
+REGLAS DE PRIORIDAD PARA FUENTES
+1. La intención explícita del usuario manda sobre el modo de rigor. Si dice "basándote en este archivo", "usa solo el adjunto", "según el documento", "resume este PDF", "contesta con base en el archivo" o equivalente, y NO pide verificar/comparar con fuentes externas => provided_only y needs_web=false.
+2. Si el usuario se refiere a "tu respuesta anterior", "lo anterior", "continúa", "amplía el punto 3", "resume eso", "reescribe lo anterior", "mejora esa explicación" o equivalente, y NO pide nueva investigación/verificación => conversation_only y needs_web=false.
+3. Si pide usar un archivo o respuesta anterior Y además "verifica", "contrasta", "compara con literatura", "actualiza", "busca fuentes" o "investiga" => hybrid y needs_web=true.
+4. Si pide explícitamente internet, web, fuentes recientes, noticias, precios, datos actuales, literatura reciente o verificación externa => web (o hybrid si también hay material aportado) y needs_web=true.
+5. Si HAS_PENDING_ATTACHMENTS=true y la tarea es resumir, explicar, extraer, revisar, corregir, organizar, traducir o responder preguntas SOBRE esos adjuntos, por defecto usa provided_only; no agregues web salvo que el usuario la pida o la tarea requiera contraste externo.
+6. SELECTED_ANALYSIS_MODE=high o max: para una consulta científica/técnica NUEVA y sustantiva sin una base aportada ni continuidad suficiente, prefiere web=true para sostener el rigor. Pero NUNCA uses el modo high/max como excusa para desobedecer "basándote solo en el archivo" o "basándote en tu respuesta anterior".
+7. SELECTED_CITATION_MODE distinto de none: si la tarea es nueva y necesita bibliografía, normalmente usa web=true. Si la tarea está limitada a un archivo o a la conversación, NO busques fuera solo por el formato de citación; aplica el formato únicamente a fuentes realmente disponibles y no inventes referencias.
+8. Si el material disponible no alcanza para responder bajo provided_only o conversation_only, Elix debe decir que falta información en vez de rellenar con conocimiento externo.
+
+route.needs_web debe ser coherente con source_policy:
+- web o hybrid => true.
+- provided_only o conversation_only => false.
+- auto => true solo si realmente hace falta web.
 
 route.confidence es un número de 0 a 1. Usa >=0.85 cuando la intención sea clara; baja de 0.55 si realmente es ambigua.
 
 Esquema exacto:
-{"intent":"export_current|export_named|generate_then_export|none","format":"docx|pdf","export_scope":"full_chat|last_answer|selection|generated_answer","target_title":null|string,"chat_id":null|string,"clean_prompt":null|string,"selection_query":null|string,"route":{"action":"chat|image_generate|image_edit","needs_web":true|false,"confidence":0.0}}`;
+{"intent":"export_current|export_named|generate_then_export|none","format":"docx|pdf","export_scope":"full_chat|last_answer|selection|generated_answer","target_title":null|string,"chat_id":null|string,"clean_prompt":null|string,"selection_query":null|string,"route":{"action":"chat|image_generate|image_edit","needs_web":true|false,"source_policy":"auto|provided_only|conversation_only|web|hybrid","confidence":0.0}}`;
 
-    const user = `TEXTO ACTUAL DEL USUARIO:\n${text}\n\nESTADO VISUAL DEL CHAT:\nHAS_GENERATED_IMAGE=${hasGeneratedImage}\nLAST_ASSISTANT_IS_IMAGE=${lastAssistantIsImage}\nHAS_PENDING_ATTACHMENTS=${hasPendingAttachments}\nÚLTIMO PROMPT DE IMAGEN: ${lastImagePrompt || '(ninguno)'}\n\nCONTEXTO RECIENTE:\n${recentContext}\n\nCHAT ACTUAL: ${currentId} | ${currentTitle}\n\nCATÁLOGO DE CHATS PARA EXPORTACIÓN:\n${chatList}`;
+    const user = `TEXTO ACTUAL DEL USUARIO:\n${text}\n\nCONTROLES ELEGIDOS POR EL USUARIO (NO MODIFICAR):\nSELECTED_ANALYSIS_MODE=${selectedAnalysisMode}\nSELECTED_CITATION_MODE=${selectedCitationMode}\n\nESTADO DEL CHAT:\nHAS_GENERATED_IMAGE=${hasGeneratedImage}\nLAST_ASSISTANT_IS_IMAGE=${lastAssistantIsImage}\nHAS_PENDING_ATTACHMENTS=${hasPendingAttachments}\nHAS_PREVIOUS_ASSISTANT_ANSWER=${hasPreviousAssistantAnswer}\nADJUNTOS PENDIENTES:\n${attachmentSummary}\nÚLTIMO PROMPT DE IMAGEN: ${lastImagePrompt || '(ninguno)'}\n\nCONTEXTO RECIENTE:\n${recentContext}\n\nCHAT ACTUAL: ${currentId} | ${currentTitle}\n\nCATÁLOGO DE CHATS PARA EXPORTACIÓN:\n${chatList}`;
     const r = await askGroq(apiKey, system, user, 820, { timeoutMs: 7000, maxModels: 3 });
     if (!r.ok) return json(200, { ok: false, fallback: true, reason: r.reason });
     const parsed = normalizeDecision(r.parsed);

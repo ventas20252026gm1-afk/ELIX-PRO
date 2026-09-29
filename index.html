@@ -748,6 +748,7 @@ FUENTES Y EVIDENCIA OBLIGATORIAS:
 - NO utilices como soporte principal blogs, videos, portales escolares, páginas de divulgación general, foros, redes sociales ni sitios sin revisión editorial científica.
 - No inventes autores, años, títulos, DOI, revistas, páginas ni enlaces. Si un dato bibliográfico no está disponible en las fuentes proporcionadas, no lo fabriques.
 - Si la búsqueda no aporta 10 fuentes académicas válidas, utiliza únicamente las fuentes verificables disponibles e indícalo; NUNCA completes el número con referencias de baja calidad o inventadas.
+- Si el usuario pide basarse exclusivamente en un archivo, material adjunto o una respuesta anterior, esa restricción de fuentes tiene prioridad: conserva TODO el rigor técnico de este modo, pero no busques ni añadas fuentes externas y no inventes referencias para completar una cuota.
 - Distingue con precisión evidencia, inferencias, supuestos y conclusiones.
 - Enfócate única y exclusivamente en responder lo solicitado con lenguaje técnico, sin suposiciones no sustentadas.
 - Incluye al final una sección "Referencias" con las fuentes académicas realmente utilizadas.
@@ -761,6 +762,7 @@ FUENTES Y EVIDENCIA OBLIGATORIAS:
 - CERO literatura de tesis como soporte principal y CERO blogs, videos, portales escolares, foros, redes sociales o páginas de divulgación general como referencias principales.
 - No inventes autores, fechas, DOI, revistas, títulos ni enlaces. Utiliza solamente metadatos y fuentes verificables realmente disponibles.
 - Si no existen 10 fuentes de nivel élite en el contexto recuperado, usa solo las disponibles y decláralo explícitamente; jamás rebajes la calidad para completar una cuota.
+- Si el usuario limita la tarea a un archivo, material adjunto o una respuesta anterior, mantén el nivel Élite de análisis y precisión, pero respeta esa base exclusiva: no busques fuera, no agregues conocimiento externo como si proviniera de la fuente y no inventes referencias.
 - Contrasta las fuentes, identifica consensos y discrepancias relevantes y evita extrapolaciones no sustentadas.
 - Redacta con lenguaje científico de alto nivel, precisión terminológica y corrección gramatical.
 - Incluye al final una sección "Referencias" con las fuentes realmente utilizadas.
@@ -1169,7 +1171,25 @@ ${ELIX_REGLA_LATEX}`
             
             if (academicMode !== "none") {
                 let especificidadAPA = academicMode === "apa7" ? "Aplica rigurosamente las normas APA 7ma Edición." : "";
-                promptEnriquecido += `[DIRECTIVA ACADÉMICA ESTRICTA]: Integra citas en el texto y genera las Referencias Bibliográficas al final en formato ${academicMode.toUpperCase()}. ${especificidadAPA} ESTÁ ESTRICTAMENTE PROHIBIDO RESUMIR O RECORTAR LA INFORMACIÓN. Mantén toda tu explicación técnica y paso a paso original, limitándote únicamente a incorporar el rigor bibliográfico sin sacrificar ni una letra de tu análisis.\n\n`;
+                promptEnriquecido += `[DIRECTIVA ACADÉMICA ESTRICTA]: Integra citas en el texto y genera las Referencias Bibliográficas al final en formato ${academicMode.toUpperCase()}. ${especificidadAPA} ESTÁ ESTRICTAMENTE PROHIBIDO RESUMIR O RECORTAR LA INFORMACIÓN. Mantén toda tu explicación técnica y paso a paso original, limitándote únicamente a incorporar el rigor bibliográfico sin sacrificar ni una letra de tu análisis. Si el usuario ha limitado la tarea a archivos/materiales aportados o a la conversación previa, aplica este formato únicamente a referencias realmente identificables en esa base; NO busques fuentes externas solo por el formato de citación y NO inventes datos bibliográficos.\n\n`;
+            }
+
+            const politicaFuentesElix = (typeof window.elixResolverPoliticaFuentes === 'function')
+                ? window.elixResolverPoliticaFuentes(peticionModeloElix)
+                : 'auto';
+
+            if (politicaFuentesElix === 'provided_only') {
+                promptEnriquecido += `[POLÍTICA DE FUENTES — MATERIAL APORTADO]: Resuelve esta solicitud exclusivamente con los archivos, imágenes, textos o materiales proporcionados por el usuario y con el contexto extraído de ellos. Esta restricción tiene prioridad sobre cualquier obligación general de buscar bibliografía. Mantén exactamente el nivel de análisis seleccionado (${nivelThinking}), pero NO añadas conocimiento externo como si estuviera en la fuente, NO busques nuevas fuentes y NO inventes referencias. Si el material no permite afirmar algo, indícalo claramente.
+
+`;
+            } else if (politicaFuentesElix === 'conversation_only') {
+                promptEnriquecido += `[POLÍTICA DE FUENTES — CONTINUIDAD DEL CHAT]: La solicitud se refiere a la respuesta o conversación anterior. Trabaja a partir del historial ya disponible y conserva exactamente el nivel de análisis seleccionado (${nivelThinking}). NO realices una investigación nueva ni introduzcas fuentes nuevas salvo que el usuario lo haya pedido expresamente. Si falta información para cumplir la orden sin salir de la conversación, dilo en lugar de inventarla.
+
+`;
+            } else if (politicaFuentesElix === 'hybrid') {
+                promptEnriquecido += `[POLÍTICA DE FUENTES — HÍBRIDA]: Usa primero el material aportado o la conversación previa como base y complétalo únicamente con la evidencia web recuperada porque el usuario pidió comparar, verificar, actualizar o investigar. Distingue con claridad qué proviene del material del usuario y qué proviene de fuentes externas.
+
+`;
             }
 
             if (contextoWeb) {
@@ -2202,30 +2222,87 @@ ${ELIX_REGLA_LATEX}`
     }
     window.llamarElixMultimodal = llamarElixMultimodal;
 
+    function elixRutaGroqActual(query){
+        const q=String(query||'').trim();
+        const ruta=window.ELIX_ULTIMA_RUTA_GROQ;
+        const promptModelo=String(window.ELIX_PROMPT_MODELO_LIMPIO||'').trim();
+        const coincideTexto=!!(ruta && (String(ruta.texto||'').trim()===q || (promptModelo && promptModelo===q)));
+        const valida=!!(ruta
+            && coincideTexto
+            && (Date.now()-Number(ruta.at||0))<120000
+            && Number(ruta.confidence||0)>=0.55);
+        return valida ? ruta : null;
+    }
+
+    function elixPideWebExplicita(query){
+        const q=(typeof elixNormalizarImagenTexto==='function') ? elixNormalizarImagenTexto(query) : String(query||'').toLowerCase();
+        return /\b(?:internet|web|online|fuentes?\s+(?:externas?|recientes?|actuales?)|bibliografia\s+(?:externa|reciente|actual)|literatura\s+(?:cientifica\s+)?(?:reciente|actual)|papers?\s+(?:recientes?|actuales?)|articulos?\s+(?:recientes?|actuales?)|noticias?|hoy|actualizado|actualizada|actualiza|actualizar)\b/i.test(q)
+            || /\b(?:busca|buscar|investiga|investigar|consulta|consultar|verifica|verificar|contrasta|contrastar|compara|comparar)\b.{0,45}\b(?:internet|web|fuentes?|bibliografia|literatura|papers?|articulos?|evidencia|estudios?)\b/i.test(q);
+    }
+
+    function elixPideBaseAdjunta(query){
+        const q=String(query||'').toLowerCase();
+        return /\b(?:bas[aá](?:te|ndote)|con\s+base\s+en|a\s+partir\s+de|seg[uú]n|usa|utiliza|emplea|solo|solamente|exclusivamente)\b.{0,70}\b(?:archivo|documento|pdf|adjunto|texto|imagen|material|contenido\s+adjunto)\b/i.test(q)
+            || /\b(?:este|ese|el)\s+(?:archivo|documento|pdf|adjunto)\b/i.test(q)
+            || /\bbas[aá](?:te|ndote)\s+en\s+(?:el|este|ese|esto|eso)\b/i.test(q)
+            || /\b(?:resume|resumir|analiza|analizar|revisa|revisar|extrae|extraer|explica|explicar|corrige|corregir|organiza|organizar|traduce|traducir|contesta|responde)\b.{0,55}\b(?:archivo|documento|pdf|adjunto|texto|material)\b/i.test(q);
+    }
+
+    function elixPideContinuidadConversacion(query){
+        const q=String(query||'').toLowerCase();
+        return /\b(?:bas[aá](?:te|ndote)|con\s+base\s+en|a\s+partir\s+de|seg[uú]n|usa|utiliza)\b.{0,70}\b(?:tu\s+respuesta|respuesta\s+anterior|lo\s+anterior|lo\s+que\s+dijiste|explicaci[oó]n\s+anterior|informaci[oó]n\s+anterior)\b/i.test(q)
+            || /\b(?:contin[uú]a|ampl[ií]a|resume|res[uú]melo|reformula|reescribe|mejora|corrige|acl[aá]ralo|expl[ií]calo|hazlo\s+m[aá]s)\b/i.test(q)
+            || /\b(?:ese|esa|eso|lo)\s+(?:punto|apartado|explicaci[oó]n|respuesta|texto)\b/i.test(q);
+    }
+
+    window.elixResolverPoliticaFuentes = function(query){
+        const q=String(query||'').trim();
+        const ruta=elixRutaGroqActual(q);
+        if(ruta && ['provided_only','conversation_only','web','hybrid'].includes(String(ruta.source_policy||''))){
+            return String(ruta.source_policy);
+        }
+
+        const pideWeb=elixPideWebExplicita(q);
+        const hayAdjunto=!!(String(window.ELIX_CONTEXT_ARCHIVOS_PENDIENTE||'').trim() || (Array.isArray(elixAdjuntosPendientes) && elixAdjuntosPendientes.length));
+        const chatActual=obtenerChatActual();
+        const hayRespuestaPrevia=!!elixMensajesVisibles(chatActual).some(x=>x.m?.role==='assistant' && !x.m?.isError && String(x.m?.content||'').trim());
+        const tareaNaturalSobreAdjunto=/^\s*(?:resume|resumir|analiza|analizar|revisa|revisar|extrae|extraer|explica|explicar|corrige|corregir|organiza|organizar|traduce|traducir|contesta|responde|hazme\s+un\s+resumen|dime\s+qu[eé]\s+dice)\b/i.test(q);
+        const baseAdjunta=hayAdjunto && (elixPideBaseAdjunta(q) || tareaNaturalSobreAdjunto);
+        const continuidad=hayRespuestaPrevia && elixPideContinuidadConversacion(q);
+
+        if(pideWeb && (baseAdjunta || continuidad)) return 'hybrid';
+        if(pideWeb) return 'web';
+        if(baseAdjunta) return 'provided_only';
+        if(continuidad) return 'conversation_only';
+        if(ruta?.needs_web===true) return 'web';
+        return 'auto';
+    };
+
     window.elixFlashEvaluaBusqueda = async function(query, academicMode, nivelThinking = 'medium') {
         const q = String(query || '').trim();
         const qLower = q.toLowerCase();
         const modo = String(academicMode || 'none').toLowerCase();
         const rigor = String(nivelThinking || 'medium').toLowerCase();
 
-        const soloFuentesAportadas =
-            /(solo|únicamente|unicamente|exclusivamente).{0,40}(bibliograf[ií]a|fuentes|referencias).{0,50}(proporcionad|adjunt|incluid|dadas)/i.test(q) ||
-            /(no|sin).{0,20}(buscar|b[uú]squeda|internet|web).{0,30}(fuera|extern|adicional)/i.test(q);
+        const prohibeWeb =
+            /\b(?:no|sin)\s+(?:busques?|buscar|investigues?|investigar|consultes?|consultar)\b.{0,35}\b(?:internet|web|fuentes?|bibliograf[ií]a|literatura)?/i.test(q) ||
+            /\b(?:solo|solamente|exclusivamente|[uú]nicamente)\b.{0,55}\b(?:archivo|documento|adjunto|texto\s+aportado|material\s+aportado|respuesta\s+anterior|conversaci[oó]n)\b/i.test(q);
 
-        // Una orden explícita de no usar web siempre tiene prioridad.
-        if (soloFuentesAportadas) return false;
+        // Una prohibición explícita de usar web siempre gana.
+        if (prohibeWeb) return false;
 
-        // Modo académico, Riguroso y Profundo requieren evidencia externa por diseño.
-        // Groq decide la acción, pero NO puede reducir el nivel de rigor seleccionado por el usuario.
+        const politica = window.elixResolverPoliticaFuentes(q);
+        if (politica === 'provided_only' || politica === 'conversation_only') return false;
+        if (politica === 'web' || politica === 'hybrid') return true;
+
+        // Si Groq clasificó esta misma orden como auto, respetamos su needs_web en Rápido/Estándar.
+        const rutaGroq=elixRutaGroqActual(q);
+        if (rutaGroq && rigor !== 'high' && rigor !== 'max' && modo === 'none') return !!rutaGroq.needs_web;
+
+        // Sin una base aportada/previa, el formato académico y los modos de mayor rigor
+        // sí requieren evidencia externa para tareas nuevas.
         if (modo !== 'none') return true;
         if (rigor === 'high' || rigor === 'max') return true;
-
-        // Para Rápido/Estándar sí reutilizamos la decisión del router general.
-        const rutaGroq=window.ELIX_ULTIMA_RUTA_GROQ;
-        const mismaOrden=!!(rutaGroq
-            && String(rutaGroq.texto||'').trim()===q
-            && (Date.now()-Number(rutaGroq.at||0))<120000);
-        if(mismaOrden && typeof rutaGroq.needs_web==='boolean') return rutaGroq.needs_web;
 
         const señalesWeb = [
             'internet','web','buscar','busca','investiga','investigar',
@@ -2237,10 +2314,7 @@ ${ELIX_REGLA_LATEX}`
         if (señalesWeb.some(x => qLower.includes(x))) return true;
 
         try {
-            const prompt = `Actúa como un enrutador de búsqueda web para Elix AI.
-Responde ÚNICAMENTE SI o NO.
-Responde SI si la solicitud necesita información externa, bibliografía, datos actuales o verificación en internet.
-Solicitud: ${q}`;
+            const prompt = `Actúa como un enrutador de búsqueda web para Elix AI.\nResponde ÚNICAMENTE SI o NO.\nResponde SI si la solicitud necesita información externa, bibliografía, datos actuales o verificación en internet. Si la solicitud se basa en un archivo adjunto o en una respuesta anterior y no pide verificación externa, responde NO.\nSolicitud: ${q}`;
             const r = await llamarElixMultimodal({
                 contents:[{parts:[{text:prompt}]}],
                 generationConfig:{temperature:0, maxOutputTokens:8}
@@ -3500,9 +3574,13 @@ ${detalle}`);
     function elixNormalizarRutaGroq(r){
         if(!r || typeof r!=='object') return null;
         const allowed=new Set(['chat','image_generate','image_edit']);
+        const sourceAllowed=new Set(['auto','provided_only','conversation_only','web','hybrid']);
         const action=allowed.has(String(r.action||'')) ? String(r.action) : 'chat';
+        const source_policy=sourceAllowed.has(String(r.source_policy||'')) ? String(r.source_policy) : 'auto';
         const confidence=Math.max(0,Math.min(1,Number(r.confidence)||0));
-        return { action, needs_web:!!r.needs_web, confidence };
+        const needs_web=(source_policy==='web'||source_policy==='hybrid') ? true
+            : ((source_policy==='provided_only'||source_policy==='conversation_only') ? false : !!r.needs_web);
+        return { action, needs_web, source_policy, confidence };
     }
 
     async function elixConsultarRouterGroq(texto){
@@ -3519,10 +3597,14 @@ ${detalle}`);
                 text:String(texto||''),
                 current_chat_id:String(currentChatId||''),
                 current_chat_title:String(chatActual?.title||''),
+                selected_analysis_mode:String(document.getElementById('thinking-level')?.value||'medium'),
+                selected_citation_mode:String(document.getElementById('academic-mode')?.value||'none'),
                 has_generated_image:!!ultimaImagen,
                 last_assistant_is_image:typeof elixUltimoTurnoAsistenteEsImagen==='function' ? elixUltimoTurnoAsistenteEsImagen(chatActual) : false,
+                has_previous_assistant_answer:elixMensajesVisibles(chatActual).some(x=>x.m?.role==='assistant' && !x.m?.isError && String(x.m?.content||'').trim()),
                 last_image_prompt:String(ultimaImagen?.image?.prompt||'').slice(0,1200),
                 has_pending_attachments:!!elixAdjuntosPendientes.length,
+                pending_attachments:elixAdjuntosPendientes.slice(0,12).map(f=>({name:String(f.name||''),type:String(f.type||''),size:Number(f.size)||0})),
                 recent_messages:recientes,
                 chats:(chats||[]).slice(0,80).map(c=>({id:String(c.id),title:String(c.title||''),preview:elixVistaPreviaChat(c)}))
             };
