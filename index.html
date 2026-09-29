@@ -740,10 +740,30 @@ REGLAS:
 ${ELIX_REGLA_LATEX}
 
 Objetivo: entregar una respuesta técnicamente sólida, clara y suficientemente desarrollada, sin llegar al nivel de exhaustividad de los modos Riguroso o Profundo.`,
-            high: `Instrucción CRÍTICA: Eres un modelo estrictamente técnico y formal. NO debes hacer nada intuitivo ni inventar información. Basa tu respuesta EXCLUSIVAMENTE en literatura científica de alto nivel (mínimo revistas científicas Q3, libros formales o tesis). Enfócate única y exclusivamente en responder lo que pide el prompt de forma técnica, sin suposiciones.
+            high: `Instrucción CRÍTICA — MODO RIGUROSO (TÉCNICO): Eres un modelo estrictamente técnico, formal y verificable. NO debes hacer nada intuitivo ni inventar información.
+
+FUENTES Y EVIDENCIA OBLIGATORIAS:
+- Para consultas científicas, académicas o técnicas, sustenta la respuesta con un MÍNIMO DE 10 referencias académicas reales y pertinentes cuando la búsqueda proporcionada contenga al menos 10 fuentes válidas.
+- Prioriza artículos revisados por pares, revisiones sistemáticas, metaanálisis, revistas científicas indexadas de alto nivel, editoriales académicas reconocidas y organismos científicos oficiales.
+- NO utilices como soporte principal blogs, videos, portales escolares, páginas de divulgación general, foros, redes sociales ni sitios sin revisión editorial científica.
+- No inventes autores, años, títulos, DOI, revistas, páginas ni enlaces. Si un dato bibliográfico no está disponible en las fuentes proporcionadas, no lo fabriques.
+- Si la búsqueda no aporta 10 fuentes académicas válidas, utiliza únicamente las fuentes verificables disponibles e indícalo; NUNCA completes el número con referencias de baja calidad o inventadas.
+- Distingue con precisión evidencia, inferencias, supuestos y conclusiones.
+- Enfócate única y exclusivamente en responder lo solicitado con lenguaje técnico, sin suposiciones no sustentadas.
+- Incluye al final una sección "Referencias" con las fuentes académicas realmente utilizadas.
 
 ${ELIX_REGLA_LATEX}`,
-            max: `Instrucción CRÍTICA MÁXIMA e inquebrantable: Eres el nivel de rigor máximo estrictamente técnico y formal. NO debes hacer nada intuitivo ni inventar información. Basa tu respuesta EXCLUSIVAMENTE en literatura científica del más alto nivel: revistas de primer nivel revisadas por pares (por ejemplo Science o Nature) o literatura de universidades de élite (MIT, Harvard). MÍNIMO debes usar 10 fuentes bibliográficas para tu respuesta. CERO literatura de tesis. Enfócate única y exclusivamente en responder lo que pide el prompt de forma técnica, sin suposiciones. Debes redactar la respuesta con lenguaje científico de alto nivel y sin cometer errores de redacción, gramática u ortografía.
+            max: `Instrucción CRÍTICA MÁXIMA — MODO PROFUNDO (ÉLITE): Eres el nivel de rigor máximo estrictamente técnico, formal y verificable. NO debes hacer nada intuitivo ni inventar información.
+
+FUENTES Y EVIDENCIA OBLIGATORIAS:
+- Basa la respuesta en un MÍNIMO DE 10 referencias reales del nivel científico más alto disponible cuando la búsqueda proporcionada contenga al menos 10 fuentes válidas.
+- Prioriza literatura revisada por pares de revistas líderes, revisiones sistemáticas, metaanálisis, sociedades científicas, editoriales académicas y literatura institucional de universidades u organismos científicos de élite.
+- CERO literatura de tesis como soporte principal y CERO blogs, videos, portales escolares, foros, redes sociales o páginas de divulgación general como referencias principales.
+- No inventes autores, fechas, DOI, revistas, títulos ni enlaces. Utiliza solamente metadatos y fuentes verificables realmente disponibles.
+- Si no existen 10 fuentes de nivel élite en el contexto recuperado, usa solo las disponibles y decláralo explícitamente; jamás rebajes la calidad para completar una cuota.
+- Contrasta las fuentes, identifica consensos y discrepancias relevantes y evita extrapolaciones no sustentadas.
+- Redacta con lenguaje científico de alto nivel, precisión terminológica y corrección gramatical.
+- Incluye al final una sección "Referencias" con las fuentes realmente utilizadas.
 
 ${ELIX_REGLA_LATEX}`
         };
@@ -1031,17 +1051,34 @@ ${ELIX_REGLA_LATEX}`
         // ==========================================
         // 2. TAVILY (ELIX WEB SEARCH)
         // ==========================================
-        async function buscarFuentesElix(query) {
+        async function buscarFuentesElix(query, nivelThinking = 'medium') {
             const consulta = String(query || '').trim();
             if (!consulta) throw new Error('La consulta de búsqueda está vacía.');
-            const data = await elixBackground('elix-search', { query: consulta }, { etiqueta: '🌍 Elix AI buscando fuentes' });
+
+            const rigor = ['high', 'max'].includes(String(nivelThinking || '').toLowerCase())
+                ? String(nivelThinking).toLowerCase()
+                : 'standard';
+
+            const etiqueta = rigor === 'high'
+                ? '🌍 Elix AI buscando literatura científica'
+                : rigor === 'max'
+                    ? '🌍 Elix AI buscando literatura científica de alto nivel'
+                    : '🌍 Elix AI buscando fuentes';
+
+            const data = await elixBackground('elix-search', {
+                query: consulta,
+                rigor
+            }, { etiqueta });
+
             const resultados = Array.isArray(data?.results) ? data.results : [];
             if (!resultados.length) throw new Error('Elix AI no encontró resultados para esta consulta.');
+
             return resultados.map((r, i) => {
                 const titulo = r?.title || `Resultado ${i + 1}`;
                 const url = r?.url || '';
                 const contenido = r?.content || r?.snippet || '';
-                return `Fuente ${i + 1} (${titulo}${url ? ` - ${url}` : ''}): ${contenido}`;
+                const fecha = r?.published_date ? ` · ${r.published_date}` : '';
+                return `Fuente académica ${i + 1} (${titulo}${url ? ` - ${url}` : ''}${fecha}): ${contenido}`;
             }).join('\n\n');
         }
 
@@ -1112,13 +1149,13 @@ ${ELIX_REGLA_LATEX}`
             setCargando(true, "⚡ Elix AI evaluando la solicitud...");
             
             let contextoWeb = "";
-            const requiereInternet = await window.elixFlashEvaluaBusqueda(peticionModeloElix, academicMode);
+            const requiereInternet = await window.elixFlashEvaluaBusqueda(peticionModeloElix, academicMode, nivelThinking);
             
             if (requiereInternet) {
                 setCargando(true, "🌍 Elix AI buscando fuentes...");
                 try {
-                    const queryOptimizada = await window.generarQueryBusqueda(peticionModeloElix);
-                    contextoWeb = await window.buscarFuentesElix(queryOptimizada);
+                    const queryOptimizada = await window.generarQueryBusqueda(peticionModeloElix, nivelThinking);
+                    contextoWeb = await window.buscarFuentesElix(queryOptimizada, nivelThinking);
                 } catch (e) {
                     console.warn("Aviso de búsqueda web:", e);
                     const detalle = e?.message || String(e);
@@ -1135,7 +1172,12 @@ ${ELIX_REGLA_LATEX}`
                 promptEnriquecido += `[DIRECTIVA ACADÉMICA ESTRICTA]: Integra citas en el texto y genera las Referencias Bibliográficas al final en formato ${academicMode.toUpperCase()}. ${especificidadAPA} ESTÁ ESTRICTAMENTE PROHIBIDO RESUMIR O RECORTAR LA INFORMACIÓN. Mantén toda tu explicación técnica y paso a paso original, limitándote únicamente a incorporar el rigor bibliográfico sin sacrificar ni una letra de tu análisis.\n\n`;
             }
 
-            if (contextoWeb) promptEnriquecido += `[INFORMACIÓN ACTUALIZADA / BIBLIOGRAFÍA ENCONTRADA EN LA WEB]:\n${contextoWeb}\n\n[FIN DE LA INFORMACIÓN WEB]\n\nUtiliza la información anterior si es relevante para citar y respaldar tu respuesta académica a la siguiente solicitud:\n`;
+            if (contextoWeb) {
+                if (nivelThinking === 'high' || nivelThinking === 'max') {
+                    promptEnriquecido += `[POLÍTICA DE FUENTES DEL MODO ${nivelThinking === 'max' ? 'PROFUNDO' : 'RIGUROSO'}]: Las fuentes que siguen fueron recuperadas específicamente con filtros de calidad académica. Usa únicamente fuentes pertinentes a la afirmación que respaldan. No inventes metadatos bibliográficos. No sustituyas estas fuentes por blogs, videos, portales escolares o referencias de menor calidad. Si hay 10 o más fuentes académicas válidas, utiliza como mínimo 10 referencias distintas. Si hay menos de 10, usa solo las verificables disponibles e indícalo sin rellenar con fuentes débiles.\n\n`;
+                }
+                promptEnriquecido += `[INFORMACIÓN ACTUALIZADA / BIBLIOGRAFÍA ENCONTRADA EN LA WEB]:\n${contextoWeb}\n\n[FIN DE LA INFORMACIÓN WEB]\n\nUtiliza la información anterior si es relevante para citar y respaldar tu respuesta académica a la siguiente solicitud:\n`;
+            }
             if (contextoArchivosElix) {
                 promptEnriquecido += `\n[CONTEXTO DE ARCHIVOS PROCESADO POR ELIX AI]:\n${contextoArchivosElix}\n[FIN DEL CONTEXTO DE ARCHIVOS]\n\n`;
             }
@@ -2160,20 +2202,25 @@ ${ELIX_REGLA_LATEX}`
     }
     window.llamarElixMultimodal = llamarElixMultimodal;
 
-    window.elixFlashEvaluaBusqueda = async function(query, academicMode) {
+    window.elixFlashEvaluaBusqueda = async function(query, academicMode, nivelThinking = 'medium') {
         const q = String(query || '').trim();
         const qLower = q.toLowerCase();
         const modo = String(academicMode || 'none').toLowerCase();
+        const rigor = String(nivelThinking || 'medium').toLowerCase();
 
         const soloFuentesAportadas =
             /(solo|únicamente|unicamente|exclusivamente).{0,40}(bibliograf[ií]a|fuentes|referencias).{0,50}(proporcionad|adjunt|incluid|dadas)/i.test(q) ||
             /(no|sin).{0,20}(buscar|b[uú]squeda|internet|web).{0,30}(fuera|extern|adicional)/i.test(q);
 
+        // Una orden explícita de no usar web siempre tiene prioridad.
         if (soloFuentesAportadas) return false;
-        if (modo !== 'none') return true;
 
-        // Si el router general de Groq ya interpretó esta misma orden, reutilizamos
-        // su decisión de búsqueda y evitamos una segunda clasificación innecesaria.
+        // Modo académico, Riguroso y Profundo requieren evidencia externa por diseño.
+        // Groq decide la acción, pero NO puede reducir el nivel de rigor seleccionado por el usuario.
+        if (modo !== 'none') return true;
+        if (rigor === 'high' || rigor === 'max') return true;
+
+        // Para Rápido/Estándar sí reutilizamos la decisión del router general.
         const rutaGroq=window.ELIX_ULTIMA_RUTA_GROQ;
         const mismaOrden=!!(rutaGroq
             && String(rutaGroq.texto||'').trim()===q
@@ -2205,12 +2252,16 @@ Solicitud: ${q}`;
         }
     };
 
-    window.generarQueryBusqueda = async function(query) {
+    window.generarQueryBusqueda = async function(query, nivelThinking = 'medium') {
         try {
-            const prompt = `Extrae únicamente hasta 6 palabras clave principales de búsqueda académica/web, en español o inglés. No agregues explicaciones ni comillas. Solicitud: ${query}`;
+            const rigor = String(nivelThinking || 'medium').toLowerCase();
+            const instruccion = (rigor === 'high' || rigor === 'max')
+                ? 'Extrae una consulta científica breve y precisa, preferentemente en inglés científico cuando mejore la recuperación bibliográfica, usando terminología técnica y palabras clave propias de literatura revisada por pares. Devuelve únicamente la consulta de búsqueda, sin explicaciones ni comillas.'
+                : 'Extrae únicamente hasta 6 palabras clave principales de búsqueda académica/web, en español o inglés. No agregues explicaciones ni comillas.';
+            const prompt = `${instruccion} Solicitud: ${query}`;
             const r = await llamarElixMultimodal({
                 contents:[{parts:[{text:prompt}]}],
-                generationConfig:{temperature:0.1, maxOutputTokens:40}
+                generationConfig:{temperature:0.1, maxOutputTokens:60}
             }, 'Elix AI · búsqueda');
             return r.text.trim() || query;
         } catch (e) {
