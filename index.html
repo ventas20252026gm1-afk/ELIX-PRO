@@ -2829,10 +2829,26 @@ Solicitud posterior: ${solicitud || 'Analizar el PDF adjunto.'}`;
 
     function elixResolverTamanoImagen(texto=''){
         const t=elixNormalizarImagenTexto(texto);
-        if(/\b(9:16|vertical|portrait|retrato|story|historia|infografia|poster|afiche)\b/.test(t)) return { width:1024, height:1536 };
-        if(/\b(16:9|21:9|horizontal|landscape|banner|panoram|cabecera|header)\b/.test(t)) return { width:1536, height:1024 };
-        if(/\b(4:3)\b/.test(t)) return { width:1365, height:1024 };
-        if(/\b(3:4)\b/.test(t)) return { width:1024, height:1365 };
+
+        // 1) Una relación de aspecto explícita siempre tiene prioridad.
+        if(/\b16:9\b/.test(t)) return { width:1536, height:864 };
+        if(/\b21:9\b/.test(t)) return { width:1536, height:658 };
+        if(/\b9:16\b/.test(t)) return { width:864, height:1536 };
+        if(/\b4:3\b/.test(t)) return { width:1365, height:1024 };
+        if(/\b3:4\b/.test(t)) return { width:1024, height:1365 };
+        if(/\b1:1\b/.test(t)) return { width:1024, height:1024 };
+
+        // 2) Si el usuario indica orientación, esa orden manda sobre el tipo de pieza.
+        if(/\b(horizontal|landscape|banner|panoram(?:a|ica|ico)?|cabecera|header)\b/.test(t)) {
+            return { width:1536, height:1024 };
+        }
+        if(/\b(vertical|portrait|retrato|story|historia)\b/.test(t)) {
+            return { width:1024, height:1536 };
+        }
+
+        // 3) Solo si no especificó orientación, infografía/póster/afiche usan vertical por defecto.
+        if(/\b(infografia|poster|afiche)\b/.test(t)) return { width:1024, height:1536 };
+
         return { width:1024, height:1024 };
     }
 
@@ -2851,6 +2867,11 @@ Solicitud posterior: ${solicitud || 'Analizar el PDF adjunto.'}`;
         piezas.push('Crea una sola imagen final de alta calidad, bien compuesta y visualmente profesional. Debe respetar fielmente la intención del usuario.');
         piezas.push('Evita marcas de agua, artefactos visuales, manos deformes, bordes innecesarios y texto ilegible.');
         const norm=elixNormalizarImagenTexto(pedido);
+        if(/\b16:9\b/.test(norm)) piezas.push('FORMATO OBLIGATORIO: composición estrictamente horizontal y panorámica 16:9, diseñada para pantalla o monitor. No uses formato de póster vertical. Distribuye el contenido de izquierda a derecha aprovechando todo el ancho.');
+        else if(/\b21:9\b/.test(norm)) piezas.push('FORMATO OBLIGATORIO: composición estrictamente horizontal ultrapanorámica 21:9. No uses formato vertical.');
+        else if(/\b9:16\b/.test(norm)) piezas.push('FORMATO OBLIGATORIO: composición estrictamente vertical 9:16.');
+        else if(/\b(horizontal|landscape|panoram(?:a|ica|ico)?|banner|cabecera|header)\b/.test(norm)) piezas.push('FORMATO OBLIGATORIO: composición horizontal/apaisada. No uses formato vertical.');
+        else if(/\b(vertical|portrait|retrato|story|historia)\b/.test(norm)) piezas.push('FORMATO OBLIGATORIO: composición vertical.');
         if(/infografia/.test(norm)) piezas.push('Diseña una infografía científica clara y atractiva, con jerarquía visual limpia, secciones bien definidas, iconografía pertinente y texto en español grande y legible.');
         else if(/diagrama|esquema/.test(norm)) piezas.push('Diseña un diagrama o esquema técnico claro, bien etiquetado en español, con relaciones visuales nítidas y organización ordenada.');
         else if(/poster|póster|afiche|portada|banner/.test(norm)) piezas.push('Diseña una pieza gráfica de aspecto profesional, con composición fuerte, tipografía legible y alto impacto visual.');
