@@ -7,6 +7,12 @@ import {
   sleep,
 } from './_shared/utils.mjs';
 import { connectJobStore, assertJobId, setJob } from './_shared/jobs.mjs';
+import {
+  assertImageTransferId,
+  assertImageChunkCount,
+  readImageTransfer,
+  deleteImageTransfer,
+} from './_shared/image-store.mjs';
 
 const DEFAULT_MODEL = String(process.env.MUSE_IMAGE_MODEL || process.env.META_IMAGE_MODEL || 'muse-image-1.0').trim() || 'muse-image-1.0';
 const TOTAL_BUDGET_MS = 13 * 60 * 1000;
@@ -146,24 +152,104 @@ async function requestOpenAICompatible({ url, apiKey, model, prompt, width, heig
   throw new Error('Elix AI no recibió una imagen válida del servicio de generación.');
 }
 
+function resolveEditUrl(config) {
+  const raw = String(config?.url || '').trim();
+  if (!raw) return '';
+  if (/\/images\/generations(?:$|\?)/i.test(raw)) {
+    return raw.replace(/\/images\/generations(?=$|\?)/i, '/images/edits');
+  }
+  if (config?.provider === 'meta') return 'https://api.meta.ai/v1/images/edits';
+  return '';
+}
+
+async function requestOpenAICompatibleEdit({ url, apiKey, model, prompt, width, height, timeout, sourceDataUrl }) {
+  if (!String(sourceDataUrl || '').startsWith('data:image/')) {
+    const err = new Error('La imagen de referencia para editar no es válida.');
+    err.statusCode = 400;
+    throw err;
+  }
+  const response = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      images: [{ image_url: sourceDataUrl }],
+      n: 1,
+      size: `${width}x${height}`,
+      response_format: 'b64_json',
+      output_format: 'webp',
+    })
+  }, timeout);
+  const parsed = await parseImageResponse(response);
+  if (!response.ok) {
+    const detail = parsed?.json ? upstreamMessage(parsed.json, `${response.status} ${response.statusText}`) : `${response.status} ${response.statusText}`;
+    const err = new Error(`Elix AI: ${detail}`);
+    err.statusCode = response.status;
+    throw err;
+  }
+  const data = parsed?.json?.data?.[0] || parsed?.json?.images?.[0] || parsed?.json?.image || null;
+  const b64 = data?.b64_json || data?.base64 || parsed?.json?.b64_json || parsed?.json?.base64 || null;
+  const imageUrl = data?.url || parsed?.json?.url || null;
+  const fmt = String(parsed?.json?.output_format || 'webp').toLowerCase();
+  const mimeType = fmt === 'png' ? 'image/png' : (fmt === 'jpeg' || fmt === 'jpg' ? 'image/jpeg' : 'image/webp');
+  if (b64) return { image_base64: String(b64), mime_type: mimeType };
+  if (imageUrl) return await maybeFetchImageUrl(String(imageUrl), timeout);
+  throw new Error('Elix AI no recibió una imagen válida del servicio de edición.');
+}
+
 export const handler = async (event) => {
   connectJobStore(event);
   let jobId = '';
+  let editTransferId = '';
+  let editChunks = 0;
   try {
     const body = parseBody(event);
     jobId = assertJobId(body.job_id);
     const prompt = String(body.prompt || '').trim();
     if (!prompt) throw new Error('Falta el prompt de imagen para Elix AI.');
 
+    const operation = String(body.operation || body.mode || 'generate').trim().toLowerCase();
+    const isEdit = operation === 'edit';
     const width = clamp(body.width, 512, 1536, 1024);
     const height = clamp(body.height, 512, 1536, 1024);
     const { value: apiKey } = getImageApiKey();
-    const { model, url, mode } = resolveConfig();
+    const config = resolveConfig();
+    const { model, url, mode } = config;
     const deadline = Date.now() + TOTAL_BUDGET_MS;
+
+    let sourceDataUrl = '';
+    if (isEdit) {
+      if (mode !== 'openai') {
+        const err = new Error('La edición de imágenes de Elix AI requiere el proveedor de imágenes compatible configurado actualmente.');
+        err.statusCode = 400;
+        throw err;
+      }
+      editTransferId = assertImageTransferId(body.edit_image_transfer_id);
+      editChunks = assertImageChunkCount(body.edit_image_chunks);
+      const mimeType = String(body.edit_image_mime_type || 'image/jpeg').trim().toLowerCase();
+      if (!/^image\/(?:png|jpe?g|webp)$/i.test(mimeType)) {
+        const err = new Error('El formato de la imagen que se quiere editar no es compatible.');
+        err.statusCode = 400;
+        throw err;
+      }
+      const sourceBase64 = await readImageTransfer(editTransferId, editChunks);
+      if (!sourceBase64 || sourceBase64.length > 32_000_000) {
+        const err = new Error('La imagen que se quiere editar es demasiado grande o está vacía.');
+        err.statusCode = sourceBase64 ? 413 : 400;
+        throw err;
+      }
+      sourceDataUrl = `data:${mimeType};base64,${sourceBase64}`;
+    }
 
     await setJob(jobId, {
       status: 'running', provider: 'elix', engine: 'elix-image',
-      progress: 'Elix AI preparando la imagen.', started_at: new Date().toISOString(),
+      progress: isEdit ? 'Elix AI preparando la edición de la imagen.' : 'Elix AI preparando la imagen.',
+      started_at: new Date().toISOString(),
     });
 
     let lastError = null;
@@ -172,16 +258,32 @@ export const handler = async (event) => {
       if (remaining < 15000) break;
       await setJob(jobId, {
         status: 'running', provider: 'elix', engine: 'elix-image', attempt,
-        progress: attempt === 1 ? 'Elix AI generando imagen.' : 'Elix AI reintentando la generación de imagen.',
+        progress: isEdit
+          ? (attempt === 1 ? 'Elix AI aplicando los cambios a la imagen.' : 'Elix AI reintentando la edición de la imagen.')
+          : (attempt === 1 ? 'Elix AI generando imagen.' : 'Elix AI reintentando la generación de imagen.'),
       });
       try {
         const timeout = Math.max(15000, Math.min(PER_ATTEMPT_MAX_MS, remaining - 10000));
-        const result = mode === 'openai'
-          ? await requestOpenAICompatible({ url, apiKey, model, prompt, width, height, timeout })
-          : await requestHuggingFace({ url, apiKey, prompt, width, height, timeout });
+        let result;
+        if (isEdit) {
+          const editUrl = resolveEditUrl(config);
+          if (!editUrl) {
+            const err = new Error('El servicio de imágenes configurado no ofrece una ruta de edición compatible.');
+            err.statusCode = 400;
+            throw err;
+          }
+          result = await requestOpenAICompatibleEdit({
+            url: editUrl, apiKey, model, prompt, width, height, timeout, sourceDataUrl,
+          });
+        } else {
+          result = mode === 'openai'
+            ? await requestOpenAICompatible({ url, apiKey, model, prompt, width, height, timeout })
+            : await requestHuggingFace({ url, apiKey, prompt, width, height, timeout });
+        }
         await setJob(jobId, {
           status: 'done', provider: 'elix', engine: 'elix-image',
-          result: { ...result, width, height, model: 'Elix AI Images' }, finished_at: new Date().toISOString(),
+          result: { ...result, width, height, model: 'Elix AI Images', operation: isEdit ? 'edit' : 'generate' },
+          finished_at: new Date().toISOString(),
         });
         return;
       } catch (error) {
@@ -193,20 +295,26 @@ export const handler = async (event) => {
       if (pause > 0) await sleep(pause);
     }
 
-    throw lastError || new Error('Elix AI no pudo completar la generación de la imagen dentro del tiempo disponible.');
+    throw lastError || new Error(isEdit
+      ? 'Elix AI no pudo completar la edición de la imagen dentro del tiempo disponible.'
+      : 'Elix AI no pudo completar la generación de la imagen dentro del tiempo disponible.');
   } catch (error) {
     console.error('elix-image-background', error);
     if (jobId) {
       try {
         await setJob(jobId, {
           status: 'error', provider: 'elix', engine: 'elix-image',
-          error: error?.message || 'Error interno en Elix AI al generar la imagen.',
+          error: error?.message || 'Error interno en Elix AI al procesar la imagen.',
           upstream_status: Number(error?.statusCode) || 500,
           finished_at: new Date().toISOString(),
         });
       } catch (storeError) {
         console.error('No se pudo guardar el error del job de imagen Elix:', storeError);
       }
+    }
+  } finally {
+    if (editTransferId && editChunks) {
+      try { await deleteImageTransfer(editTransferId, editChunks); } catch (_) {}
     }
   }
 };

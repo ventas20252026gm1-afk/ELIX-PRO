@@ -1,0 +1,33 @@
+ELIX AI — EDICIÓN CONVERSACIONAL DE IMÁGENES
+
+Este parche parte del index.html que ya tiene corregido el formato horizontal 16:9.
+
+REEMPLAZA / AGREGA SOLO ESTOS ARCHIVOS:
+1. /index.html
+2. /netlify/functions/elix-image-background.mjs
+3. /netlify/functions/elix-image-upload-chunk.mjs   (nuevo)
+4. /netlify/functions/_shared/image-store.mjs      (nuevo)
+
+No cambies variables de entorno. No hace falta modificar package.json ni netlify.toml.
+
+QUÉ HACE:
+- Conserva la generación normal de imágenes existente.
+- Si Elix acaba de generar una imagen, entiende órdenes como:
+  "cambia el título por Biomoléculas"
+  "corrige esa imagen"
+  "quita el icono de la derecha"
+  "pon más flechas"
+  "haz el título más grande"
+  "haz esto sobre esa imagen"
+- Toma la última imagen generada en ese chat y la envía a la ruta oficial de edición de Muse Image.
+- Cada nueva edición queda como nueva imagen en el chat, por lo que la siguiente corrección trabaja sobre la versión más reciente.
+- Mantiene la relación de aspecto anterior salvo que el usuario pida explícitamente otra (16:9, vertical, etc.).
+- La imagen de referencia se sube en fragmentos pequeños para evitar errores 413.
+
+PRUEBA RECOMENDADA DESPUÉS DEL DEPLOY:
+1. Genera una imagen.
+2. Sin cambiar de chat escribe: "cambia únicamente el título por Biomoléculas y deja todo lo demás igual".
+3. Luego escribe: "ahora quita el icono de la esquina superior derecha".
+
+NOTA:
+La edición de IA es generativa: el código obliga a conservar lo no solicitado, pero el modelo todavía puede introducir pequeñas variaciones visuales.

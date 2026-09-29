@@ -2889,6 +2889,187 @@ ${contextoChat}`);
         return piezas.join('\n\n');
     }
 
+    function elixUltimaImagenGenerada(chat){
+        const mensajes=Array.isArray(chat?.messages) ? chat.messages : [];
+        for(let i=mensajes.length-1;i>=0;i--){
+            const img=mensajes[i]?.generatedImage;
+            if(img?.dataUrl && String(img.dataUrl).startsWith('data:image/')) return { image:img, index:i, message:mensajes[i] };
+        }
+        return null;
+    }
+
+    function elixUltimoTurnoAsistenteEsImagen(chat){
+        const mensajes=Array.isArray(chat?.messages) ? chat.messages : [];
+        for(let i=mensajes.length-1;i>=0;i--){
+            const m=mensajes[i];
+            if(m?.role!=='assistant') continue;
+            return !!(m.generatedImage?.dataUrl && String(m.generatedImage.dataUrl).startsWith('data:image/'));
+        }
+        return false;
+    }
+
+    function elixPareceEdicionImagen(texto, chat=obtenerChatActual()){
+        const ultima=elixUltimaImagenGenerada(chat);
+        if(!ultima) return false;
+        const t=elixNormalizarImagenTexto(texto);
+        if(!t) return false;
+
+        const accion=/\b(edita|editar|editame|modifica|modificar|modificame|modifiques|cambia|cambiar|cambiame|cambies|cambiale|corrige|corregir|corrigeme|corrijas|ajusta|ajustar|ajustame|ajustes|reemplaza|reemplazar|reemplaces|sustituye|sustituir|sustituyas|quita|quitar|quitame|quites|elimina|eliminar|elimines|borra|borrar|borres|anade|anadir|anadas|agrega|agregar|agregues|pon|poner|pongas|mueve|mover|muevas|mejora|mejorar|mejores|hazla|dejala|cambiala|corrigela|ajustala|quitale|ponle|agregale|anadele)\b/.test(t);
+        const referencia=/\b(esa imagen|esta imagen|la imagen|imagen anterior|ultima imagen|última imagen|esa infografia|esta infografia|la infografia|infografia anterior|ese poster|este poster|el poster|sobre esa|sobre esta|en esa|en esta|la que hiciste|la que me hiciste|la que generaste|imagen que hiciste|imagen que generaste)\b/.test(t);
+        const objeto=/\b(imagen|infografia|poster|ilustracion|render|dibujo|diagrama|banner|portada|afiche|foto|fotografia)\b/.test(t);
+        const explicita=/\b(edita|editar|modifica|modificar|modifiques|corrige|corregir|corrijas|cambia|cambiar|cambies|mejora|mejorar)\b/.test(t) && objeto;
+        const ultimaEsImagen=elixUltimoTurnoAsistenteEsImagen(chat);
+        const hablaDeOtraCosa=/\b(chat|conversacion|documento|word|pdf|mensaje|respuesta|modelo|modo|nombre del chat)\b/.test(t);
+        const continuidad=ultimaEsImagen && accion && !hablaDeOtraCosa;
+        const objetivoVisual=/\b(titulo|texto|letra|tipografia|icono|dibujo|imagen|color|fondo|seccion|flecha|etiqueta|logo|tamano|posicion|elemento)\b/.test(t);
+        const contextual=(referencia && /\b(haz|hacer|aplica|aplicar)\b/.test(t))
+            || (ultimaEsImagen && !hablaDeOtraCosa && objetivoVisual && /\b(haz|hacer)\b/.test(t));
+        return (accion && (referencia || explicita || continuidad)) || contextual;
+    }
+
+    function elixTieneFormatoImagenExplicito(texto=''){
+        const t=elixNormalizarImagenTexto(texto);
+        return /\b(16:9|21:9|9:16|4:3|3:4|1:1|horizontal|landscape|banner|panoram(?:a|ica|ico)?|cabecera|header|vertical|portrait|retrato|story|historia)\b/.test(t);
+    }
+
+    function elixConstruirPromptEdicionImagen(solicitud=''){
+        const pedido=String(solicitud||'').trim();
+        const piezas=[
+            'Edita la imagen proporcionada siguiendo exactamente la solicitud del usuario.',
+            'REGLA PRINCIPAL: modifica únicamente los elementos que el usuario pide cambiar. Conserva intactos todos los elementos no mencionados: composición, encuadre, colores, tipografía, ilustraciones, iconos, posiciones, fondo, estilo y relación de aspecto.',
+            'No rediseñes la imagen desde cero, no agregues contenido no solicitado y no elimines elementos que el usuario no haya pedido eliminar.',
+            'Si el usuario corrige texto, reemplaza solamente ese texto y conserva su ubicación, jerarquía y estilo visual tanto como sea posible.',
+            'Mantén el idioma original de la imagen salvo que el usuario pida explícitamente otro idioma.',
+            `Cambio exacto solicitado por el usuario: ${pedido}`
+        ];
+        return piezas.join('\n\n');
+    }
+
+    function elixParsearDataUrlImagen(dataUrl=''){
+        const m=/^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(dataUrl||''));
+        if(!m) throw new Error('La imagen anterior no está disponible en un formato editable.');
+        return { mimeType:m[1].toLowerCase().replace('image/jpg','image/jpeg'), base64:m[2].replace(/\s+/g,'') };
+    }
+
+    function elixNuevoTransferImagenId(){
+        const uuid=(globalThis.crypto && typeof globalThis.crypto.randomUUID==='function')
+            ? globalThis.crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+        return `eliximg-${uuid}`.replace(/[^a-zA-Z0-9_-]/g,'');
+    }
+
+    const ELIX_IMAGE_UPLOAD_CHARS=96*1024;
+
+    async function elixSubirImagenParaEdicion(dataUrl){
+        const parsed=elixParsearDataUrlImagen(dataUrl);
+        const transferId=elixNuevoTransferImagenId();
+        const totalChunks=Math.max(1,Math.ceil(parsed.base64.length/ELIX_IMAGE_UPLOAD_CHARS));
+        if(totalChunks>240) throw new Error('La imagen anterior es demasiado grande para prepararla de forma segura.');
+        try{
+            for(let i=0;i<totalChunks;i++){
+                const chunk=parsed.base64.slice(i*ELIX_IMAGE_UPLOAD_CHARS,(i+1)*ELIX_IMAGE_UPLOAD_CHARS);
+                setCargando(true,`🖼️ Elix AI preparando imagen para editar · ${i+1}/${totalChunks}`);
+                await elixBackend('elix-image-upload-chunk',{
+                    action:'upload', transfer_id:transferId, index:i, total_chunks:totalChunks, chunk
+                });
+            }
+            return { transfer_id:transferId, total_chunks:totalChunks, mime_type:parsed.mimeType };
+        }catch(error){
+            try{ await elixBackend('elix-image-upload-chunk',{ action:'cleanup', transfer_id:transferId, total_chunks:totalChunks }); }catch(_){}
+            throw error;
+        }
+    }
+
+    async function elixLimpiarTransferImagen(transfer){
+        if(!transfer?.transfer_id || !transfer?.total_chunks) return;
+        try{
+            await elixBackend('elix-image-upload-chunk',{
+                action:'cleanup', transfer_id:transfer.transfer_id, total_chunks:transfer.total_chunks
+            });
+        }catch(_){}
+    }
+
+    async function elixEditarImagenChat(ordenVisible){
+        const chatActual=obtenerChatActual();
+        const previa=elixUltimaImagenGenerada(chatActual);
+        const inputField=document.getElementById('user-input');
+        const orden=String(ordenVisible||'').trim();
+        if(!orden) return;
+        if(!previa?.image?.dataUrl){
+            agregarMensajeUI('assistant','No encuentro una imagen anterior de Elix AI en este chat para editar.',null,[]);
+            return;
+        }
+
+        if(inputField){ inputField.value=''; inputField.style.height='auto'; }
+        agregarMensajeUI('user',orden,null,[],null);
+        chatActual.messages.push({
+            role:'user',
+            content:`[SOLICITUD DE EDICION DE IMAGEN ELIX AI]\n${orden}`,
+            displayContent:orden,
+            attachments:[]
+        });
+        guardarEnLocal();
+
+        let transfer=null;
+        try{
+            transfer=await elixSubirImagenParaEdicion(previa.image.dataUrl);
+            const size=elixTieneFormatoImagenExplicito(orden)
+                ? elixResolverTamanoImagen(orden)
+                : {
+                    width:Number(previa.image.width)||1024,
+                    height:Number(previa.image.height)||1024
+                };
+            const promptEdicion=elixConstruirPromptEdicionImagen(orden);
+            setCargando(true,'🎨 Elix AI aplicando cambios a la imagen...');
+            const data=await elixBackground('elix-image',{
+                operation:'edit',
+                prompt:promptEdicion,
+                original_request:orden,
+                width:size.width,
+                height:size.height,
+                edit_image_transfer_id:transfer.transfer_id,
+                edit_image_chunks:transfer.total_chunks,
+                edit_image_mime_type:transfer.mime_type
+            },{ etiqueta:'🎨 Elix AI editando imagen', maxWaitMs:14*60*1000 });
+
+            let dataUrl='';
+            const mime=String(data?.mime_type||'image/png');
+            if(data?.image_base64) dataUrl=`data:${mime};base64,${data.image_base64}`;
+            else if(data?.data_url) dataUrl=String(data.data_url||'');
+            if(!dataUrl) throw new Error('Elix AI no devolvió una imagen editada utilizable.');
+            dataUrl=await elixCompactarDataUrlGenerada(dataUrl);
+
+            const nombreBase=(orden || 'imagen-editada-elix').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60) || 'imagen-editada-elix';
+            const ext=mime.includes('jpeg') ? 'jpg' : (mime.includes('webp') ? 'webp' : 'png');
+            const msgText='He aplicado el cambio solicitado sobre la imagen anterior.';
+            const generatedImage={
+                dataUrl,
+                mimeType:mime,
+                width:Number(data?.width)||size.width,
+                height:Number(data?.height)||size.height,
+                prompt:orden,
+                alt:orden,
+                filename:`${nombreBase}.${ext}`,
+                edited:true
+            };
+            chatActual.messages.push({ role:'assistant', content:msgText, reasoning:null, generatedImage });
+            guardarEnLocal();
+            agregarMensajeUI('assistant',msgText,null,[],generatedImage);
+        }catch(error){
+            console.error('Elix AI no pudo editar la imagen:',error);
+            const detalle=String(error?.message||error)
+                .replace(/Meta|Hugging ?Face|Groq|DeepSeek|Gemini|Tavily|Netlify/gi,'Elix AI')
+                .replace(/facebook\/muse[\w.-]*/gi,'Elix AI Images');
+            const mensaje=`⚠️ Elix AI no pudo aplicar el cambio a la imagen: ${detalle}`;
+            chatActual.messages.push({ role:'assistant', content:mensaje, reasoning:null, isError:true });
+            guardarEnLocal();
+            agregarMensajeUI('assistant',mensaje);
+            await elixLimpiarTransferImagen(transfer);
+        }finally{
+            setCargando(false);
+        }
+    }
+
     async function elixCompactarDataUrlGenerada(dataUrl){
         try{
             if(!String(dataUrl||'').startsWith('data:image/')) return String(dataUrl||'');
@@ -2978,6 +3159,13 @@ ${promptImagen}`, displayContent:orden, attachments:adjuntosMeta });
 
         if(decision?.intent==='generate_then_export'){
             return await elixGenerarYExportar(decision,ordenDirecta);
+        }
+
+        const esEdicionImagen = ordenDirecta && !elixAdjuntosPendientes.length
+            ? elixPareceEdicionImagen(ordenDirecta, obtenerChatActual())
+            : false;
+        if(esEdicionImagen){
+            return await elixEditarImagenChat(ordenDirecta);
         }
 
         const esImagen = ordenDirecta ? elixPareceSolicitudImagen(ordenDirecta, elixAdjuntosPendientes.length > 0) : false;
